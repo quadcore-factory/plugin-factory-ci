@@ -43,18 +43,37 @@ jobs:
     container: php:8.3-cli-bookworm
     outputs:
       artifact-name: ${{ steps.package.outputs['artifact-name'] }}
-    defaults:
-      run:
-        working-directory: ${{ inputs['working-directory'] }}/${{ inputs['package-path'] }}
+    env:
+      WORKING_DIRECTORY: ${{ inputs['working-directory'] }}
+      PACKAGE_PATH: ${{ inputs['package-path'] }}
     steps:
       - name: Check out the requested revision
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
 
+      - name: Validate package paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          for path_name in WORKING_DIRECTORY PACKAGE_PATH; do
+            path_value="${!path_name}"
+            if [[ -z "$path_value" || "$path_value" == /* || "$path_value" == *$'\n'* || "$path_value" == *'//' || "$path_value" == */ || "$path_value" =~ (^|/)\.\.(/|$) || ! "$path_value" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+              echo "$path_name must be a non-empty relative path without traversal segments: $path_value" >&2
+              exit 1
+            fi
+          done
+          resolved_directory="$(realpath -m -- "$GITHUB_WORKSPACE/$WORKING_DIRECTORY/$PACKAGE_PATH")"
+          case "$resolved_directory" in
+            "$GITHUB_WORKSPACE"|"$GITHUB_WORKSPACE"/*) ;;
+            *) echo "Package directory resolves outside GITHUB_WORKSPACE" >&2; exit 1 ;;
+          esac
+          [[ -d "$resolved_directory" ]] || { echo "Package directory does not exist: $WORKING_DIRECTORY/$PACKAGE_PATH" >&2; exit 1; }
+
       - name: Install production dependencies
         if: ${{ inputs['include-vendor'] }}
         run: |
+          cd "$WORKING_DIRECTORY/$PACKAGE_PATH"
           apt-get update
           apt-get install --no-install-recommends -y composer git unzip
           composer install --no-dev --no-interaction --prefer-dist --no-progress --optimize-autoloader
@@ -67,6 +86,7 @@ jobs:
           INCLUDE_VENDOR: ${{ inputs['include-vendor'] }}
         run: |
           set -euo pipefail
+          cd "$WORKING_DIRECTORY/$PACKAGE_PATH"
           if [[ ! "$PACKAGE_NAME" =~ ^[A-Za-z0-9._-]+$ ]]; then
             echo "Invalid package name: $PACKAGE_NAME" >&2
             exit 1

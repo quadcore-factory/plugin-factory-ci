@@ -54,14 +54,33 @@ jobs:
     container: php:${{ inputs['php-version'] }}-cli-bookworm
     env:
       COMPOSER_CACHE_DIR: ${{ github.workspace }}/.composer-cache
-    defaults:
-      run:
-        working-directory: ${{ inputs['working-directory'] }}
+      WORKING_DIRECTORY: ${{ inputs['working-directory'] }}
+      PHP_EXTENSIONS: ${{ inputs['php-extensions'] }}
+      PHP_VERSION: ${{ inputs['php-version'] }}
+      RUN_LINT: ${{ inputs['run-lint'] }}
+      RUN_TESTS: ${{ inputs['run-tests'] }}
+      LINT_SCRIPT: ${{ inputs['lint-script'] }}
+      TEST_SCRIPT: ${{ inputs['test-script'] }}
     steps:
       - name: Check out the requested revision
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
+
+      - name: Validate workflow paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$WORKING_DIRECTORY" || "$WORKING_DIRECTORY" == /* || "$WORKING_DIRECTORY" == *$'\n'* || "$WORKING_DIRECTORY" == *'//' || "$WORKING_DIRECTORY" == */ || "$WORKING_DIRECTORY" =~ (^|/)\.\.(/|$) || ! "$WORKING_DIRECTORY" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "working-directory must be a non-empty relative path without traversal segments: $WORKING_DIRECTORY" >&2
+            exit 1
+          fi
+          resolved_directory="$(realpath -m -- "$GITHUB_WORKSPACE/$WORKING_DIRECTORY")"
+          case "$resolved_directory" in
+            "$GITHUB_WORKSPACE"|"$GITHUB_WORKSPACE"/*) ;;
+            *) echo "working-directory resolves outside GITHUB_WORKSPACE" >&2; exit 1 ;;
+          esac
+          [[ -d "$resolved_directory" ]] || { echo "working-directory does not exist: $WORKING_DIRECTORY" >&2; exit 1; }
 
       - name: Install PHP extensions and Composer
         shell: bash
@@ -75,7 +94,7 @@ jobs:
             libxml2-dev \
             libzip-dev \
             unzip
-          IFS=',' read -r -a requested_extensions <<< "${{ inputs['php-extensions'] }}"
+          IFS=',' read -r -a requested_extensions <<< "$PHP_EXTENSIONS"
           extensions=()
           for extension in "${requested_extensions[@]}"; do
             extension="${extension//[[:space:]]/}"
@@ -100,15 +119,15 @@ jobs:
             composer-${{ runner.os }}-php-${{ inputs['php-version'] }}-
 
       - name: Validate Composer metadata
-        run: composer validate --strict --check-lock
+        run: cd "$WORKING_DIRECTORY" && composer validate --strict --check-lock
 
       - name: Install Composer dependencies with development packages
         if: ${{ inputs['composer-dev'] }}
-        run: composer install --no-interaction --prefer-dist --no-progress
+        run: cd "$WORKING_DIRECTORY" && composer install --no-interaction --prefer-dist --no-progress
 
       - name: Install production Composer dependencies
         if: ${{ !inputs['composer-dev'] }}
-        run: composer install --no-dev --no-interaction --prefer-dist --no-progress --optimize-autoloader
+        run: cd "$WORKING_DIRECTORY" && composer install --no-dev --no-interaction --prefer-dist --no-progress --optimize-autoloader
 
       - name: Run lint gate
         if: ${{ inputs['run-lint'] }}
@@ -117,6 +136,7 @@ jobs:
           REQUESTED_SCRIPT: ${{ inputs['lint-script'] }}
         run: |
           set -euo pipefail
+          cd "$WORKING_DIRECTORY"
           if [[ ! "$REQUESTED_SCRIPT" =~ ^[A-Za-z0-9_.:-]+$ ]]; then
             echo "Invalid lint Composer script name: $REQUESTED_SCRIPT" >&2
             exit 1
@@ -134,6 +154,7 @@ jobs:
           REQUESTED_SCRIPT: ${{ inputs['test-script'] }}
         run: |
           set -euo pipefail
+          cd "$WORKING_DIRECTORY"
           if [[ ! "$REQUESTED_SCRIPT" =~ ^[A-Za-z0-9_.:-]+$ ]]; then
             echo "Invalid test Composer script name: $REQUESTED_SCRIPT" >&2
             exit 1
@@ -151,8 +172,8 @@ jobs:
           {
             echo '## Plugin quality'
             echo
-            echo "- PHP: `${{ inputs['php-version'] }}`"
-            echo "- Directory: `${{ inputs['working-directory'] }}`"
-            echo "- Lint gate: `${{ inputs['run-lint'] }}` (`${{ inputs['lint-script'] }}`)"
-            echo "- Test gate: `${{ inputs['run-tests'] }}` (`${{ inputs['test-script'] }}`)"
+            echo "- PHP: \`$PHP_VERSION\`"
+            echo "- Directory: \`$WORKING_DIRECTORY\`"
+            echo "- Lint gate: \`$RUN_LINT\` (\`$LINT_SCRIPT\`)"
+            echo "- Test gate: \`$RUN_TESTS\` (\`$TEST_SCRIPT\`)"
           } >> "$GITHUB_STEP_SUMMARY"
