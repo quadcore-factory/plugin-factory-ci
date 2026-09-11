@@ -126,7 +126,7 @@ jobs:
           fi
           LC_ALL=C sort -o "$file_list" "$file_list"
           [[ -s "$file_list" ]] || { echo 'No package files remain after exclusions' >&2; exit 1; }
-          commit_timestamp="$(git show -s --format=%ct "$GITHUB_SHA")"
+          commit_timestamp=315532800
           while IFS= read -r file; do
             touch -h -d "@$commit_timestamp" -- "$file"
           done < "$file_list"
