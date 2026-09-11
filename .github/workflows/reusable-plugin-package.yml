@@ -1,0 +1,143 @@
+name: Reusable plugin package
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: Directory containing the package source, relative to the repository root.
+        required: false
+        type: string
+        default: .
+      package-name:
+        description: Safe artifact and archive name.
+        required: false
+        type: string
+        default: plugin
+      package-path:
+        description: Source path below working-directory to package.
+        required: false
+        type: string
+        default: .
+      artifact-retention-days:
+        description: Number of days to retain the uploaded package artifact.
+        required: false
+        type: number
+        default: 7
+      include-vendor:
+        description: Install production Composer dependencies and include vendor/.
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      artifact-name:
+        description: Name of the uploaded package artifact.
+        value: ${{ jobs.package.outputs['artifact-name'] }}
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Package plugin
+    runs-on: ubuntu-latest
+    container: php:8.3-cli-bookworm
+    outputs:
+      artifact-name: ${{ steps.package.outputs['artifact-name'] }}
+    env:
+      WORKING_DIRECTORY: ${{ inputs['working-directory'] }}
+      PACKAGE_PATH: ${{ inputs['package-path'] }}
+    steps:
+      - name: Check out the requested revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Validate package paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          for path_name in WORKING_DIRECTORY PACKAGE_PATH; do
+            path_value="${!path_name}"
+            if [[ -z "$path_value" || "$path_value" == /* || "$path_value" == *$'\n'* || "$path_value" == *'//' || "$path_value" == */ || "$path_value" =~ (^|/)\.\.(/|$) || ! "$path_value" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+              echo "$path_name must be a non-empty relative path without traversal segments: $path_value" >&2
+              exit 1
+            fi
+          done
+          resolved_directory="$(realpath -m -- "$GITHUB_WORKSPACE/$WORKING_DIRECTORY/$PACKAGE_PATH")"
+          case "$resolved_directory" in
+            "$GITHUB_WORKSPACE"|"$GITHUB_WORKSPACE"/*) ;;
+            *) echo "Package directory resolves outside GITHUB_WORKSPACE" >&2; exit 1 ;;
+          esac
+          [[ -d "$resolved_directory" ]] || { echo "Package directory does not exist: $WORKING_DIRECTORY/$PACKAGE_PATH" >&2; exit 1; }
+
+      - name: Install packaging tools
+        run: |
+          apt-get update
+          apt-get install --no-install-recommends -y ca-certificates curl git unzip zip
+
+      - name: Install production dependencies
+        if: ${{ inputs['include-vendor'] }}
+        run: |
+          cd "$WORKING_DIRECTORY/$PACKAGE_PATH"
+          curl -fsSL https://getcomposer.org/installer -o /tmp/composer-setup.php
+          expected_checksum="$(curl -fsSL https://composer.github.io/installer.sig)"
+          actual_checksum="$(php -r 'echo hash_file("sha384", "/tmp/composer-setup.php");')"
+          if [[ "$expected_checksum" != "$actual_checksum" ]]; then
+            echo 'Composer installer checksum verification failed' >&2
+            exit 1
+          fi
+          php /tmp/composer-setup.php --install-dir=/usr/local/bin --filename=composer
+          rm /tmp/composer-setup.php
+          composer install --no-dev --no-interaction --prefer-dist --no-progress --optimize-autoloader
+
+      - name: Create deterministic source package
+        id: package
+        shell: bash
+        env:
+          PACKAGE_NAME: ${{ inputs['package-name'] }}
+          INCLUDE_VENDOR: ${{ inputs['include-vendor'] }}
+        run: |
+          set -euo pipefail
+          cd "$WORKING_DIRECTORY/$PACKAGE_PATH"
+          if [[ ! "$PACKAGE_NAME" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "Invalid package name: $PACKAGE_NAME" >&2
+            exit 1
+          fi
+          archive="$RUNNER_TEMP/$PACKAGE_NAME.zip"
+          file_list="$RUNNER_TEMP/$PACKAGE_NAME-files.txt"
+          find . \
+            -path './.git' -prune -o \
+            -path './.github' -prune -o \
+            -path './tests' -prune -o \
+            -path './docs' -prune -o \
+            -path './vendor' -prune -o \
+            -type f \
+            ! -name '*.md' \
+            ! -name '.gitignore' \
+            ! -name '.gitattributes' \
+            ! -name '.editorconfig' \
+            ! -name 'phpunit.xml*' \
+            ! -name 'phpstan.neon*' \
+            ! -name 'psalm.xml*' \
+            ! -name 'phpcs.xml*' \
+            -print | LC_ALL=C sort > "$file_list"
+          if [[ "$INCLUDE_VENDOR" == 'true' && -d vendor ]]; then
+            find vendor -type f -print | LC_ALL=C sort >> "$file_list"
+          fi
+          LC_ALL=C sort -o "$file_list" "$file_list"
+          [[ -s "$file_list" ]] || { echo 'No package files remain after exclusions' >&2; exit 1; }
+          commit_timestamp="$(git show -s --format=%ct "$GITHUB_SHA")"
+          while IFS= read -r file; do
+            touch -h -d "@$commit_timestamp" -- "$file"
+          done < "$file_list"
+          zip -X -q "$archive" -@ < "$file_list"
+          echo "artifact-name=$PACKAGE_NAME" >> "$GITHUB_OUTPUT"
+          echo "Package archive: $archive"
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs['artifact-name'] }}
+          path: ${{ runner.temp }}/${{ inputs['package-name'] }}.zip
+          if-no-files-found: error
+          retention-days: ${{ inputs['artifact-retention-days'] }}
