@@ -70,12 +70,24 @@ jobs:
           esac
           [[ -d "$resolved_directory" ]] || { echo "Package directory does not exist: $WORKING_DIRECTORY/$PACKAGE_PATH" >&2; exit 1; }
 
+      - name: Install packaging tools
+        run: |
+          apt-get update
+          apt-get install --no-install-recommends -y ca-certificates curl git unzip zip
+
       - name: Install production dependencies
         if: ${{ inputs['include-vendor'] }}
         run: |
           cd "$WORKING_DIRECTORY/$PACKAGE_PATH"
-          apt-get update
-          apt-get install --no-install-recommends -y composer git unzip
+          curl -fsSL https://getcomposer.org/installer -o /tmp/composer-setup.php
+          expected_checksum="$(curl -fsSL https://composer.github.io/installer.sig)"
+          actual_checksum="$(php -r 'echo hash_file("sha384", "/tmp/composer-setup.php");')"
+          if [[ "$expected_checksum" != "$actual_checksum" ]]; then
+            echo 'Composer installer checksum verification failed' >&2
+            exit 1
+          fi
+          php /tmp/composer-setup.php --install-dir=/usr/local/bin --filename=composer
+          rm /tmp/composer-setup.php
           composer install --no-dev --no-interaction --prefer-dist --no-progress --optimize-autoloader
 
       - name: Create deterministic source package
@@ -92,6 +104,7 @@ jobs:
             exit 1
           fi
           archive="$RUNNER_TEMP/$PACKAGE_NAME.zip"
+          file_list="$RUNNER_TEMP/$PACKAGE_NAME-files.txt"
           find . \
             -path './.git' -prune -o \
             -path './.github' -prune -o \
@@ -107,10 +120,12 @@ jobs:
             ! -name 'phpstan.neon*' \
             ! -name 'psalm.xml*' \
             ! -name 'phpcs.xml*' \
-            -print | LC_ALL=C sort | zip -X -q "$archive" -@
+            -print | LC_ALL=C sort > "$file_list"
           if [[ "$INCLUDE_VENDOR" == 'true' && -d vendor ]]; then
-            find vendor -type f -print | LC_ALL=C sort | zip -X -q "$archive" -@
+            find vendor -type f -print | LC_ALL=C sort >> "$file_list"
           fi
+          [[ -s "$file_list" ]] || { echo 'No package files remain after exclusions' >&2; exit 1; }
+          zip -X -q "$archive" -@ < "$file_list"
           echo "artifact-name=$PACKAGE_NAME" >> "$GITHUB_OUTPUT"
           echo "Package archive: $archive"
 
