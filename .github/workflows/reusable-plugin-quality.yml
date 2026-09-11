@@ -159,6 +159,7 @@ jobs:
             echo "Invalid lint Composer script name: $REQUESTED_SCRIPT" >&2
             exit 1
           fi
+          # shellcheck disable=SC2016
           php -r '$data = json_decode(file_get_contents("composer.json"), true); $name = $argv[1] ?? ""; exit(isset($data["scripts"][$name]) ? 0 : 1);' "$REQUESTED_SCRIPT" || {
             echo "Requested lint Composer script is missing: $REQUESTED_SCRIPT" >&2
             exit 1
@@ -177,6 +178,7 @@ jobs:
             echo "Invalid test Composer script name: $REQUESTED_SCRIPT" >&2
             exit 1
           fi
+          # shellcheck disable=SC2016
           php -r '$data = json_decode(file_get_contents("composer.json"), true); $name = $argv[1] ?? ""; exit(isset($data["scripts"][$name]) ? 0 : 1);' "$REQUESTED_SCRIPT" || {
             echo "Requested test Composer script is missing: $REQUESTED_SCRIPT" >&2
             exit 1
