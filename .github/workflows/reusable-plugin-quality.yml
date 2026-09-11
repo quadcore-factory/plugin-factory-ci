@@ -164,7 +164,7 @@ jobs:
             echo "Requested lint Composer script is missing: $REQUESTED_SCRIPT" >&2
             exit 1
           }
-          composer run-script --if-present "$REQUESTED_SCRIPT"
+          composer run-script --no-interaction "$REQUESTED_SCRIPT"
 
       - name: Run test gate
         if: ${{ inputs['run-tests'] }}
@@ -183,7 +183,7 @@ jobs:
             echo "Requested test Composer script is missing: $REQUESTED_SCRIPT" >&2
             exit 1
           }
-          composer run-script --if-present "$REQUESTED_SCRIPT"
+          composer run-script --no-interaction "$REQUESTED_SCRIPT"
 
       - name: Write job summary
         if: always()
