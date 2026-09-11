@@ -1,0 +1,103 @@
+name: Reusable plugin package
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: Directory containing the package source, relative to the repository root.
+        required: false
+        type: string
+        default: .
+      package-name:
+        description: Safe artifact and archive name.
+        required: false
+        type: string
+        default: plugin
+      package-path:
+        description: Source path below working-directory to package.
+        required: false
+        type: string
+        default: .
+      artifact-retention-days:
+        description: Number of days to retain the uploaded package artifact.
+        required: false
+        type: number
+        default: 7
+      include-vendor:
+        description: Install production Composer dependencies and include vendor/.
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      artifact-name:
+        description: Name of the uploaded package artifact.
+        value: ${{ jobs.package.outputs['artifact-name'] }}
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Package plugin
+    runs-on: ubuntu-latest
+    container: php:8.3-cli-bookworm
+    outputs:
+      artifact-name: ${{ steps.package.outputs['artifact-name'] }}
+    defaults:
+      run:
+        working-directory: ${{ inputs['working-directory'] }}/${{ inputs['package-path'] }}
+    steps:
+      - name: Check out the requested revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Install production dependencies
+        if: ${{ inputs['include-vendor'] }}
+        run: |
+          apt-get update
+          apt-get install --no-install-recommends -y composer git unzip
+          composer install --no-dev --no-interaction --prefer-dist --no-progress --optimize-autoloader
+
+      - name: Create deterministic source package
+        id: package
+        shell: bash
+        env:
+          PACKAGE_NAME: ${{ inputs['package-name'] }}
+          INCLUDE_VENDOR: ${{ inputs['include-vendor'] }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$PACKAGE_NAME" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "Invalid package name: $PACKAGE_NAME" >&2
+            exit 1
+          fi
+          archive="$RUNNER_TEMP/$PACKAGE_NAME.zip"
+          find . \
+            -path './.git' -prune -o \
+            -path './.github' -prune -o \
+            -path './tests' -prune -o \
+            -path './docs' -prune -o \
+            -path './vendor' -prune -o \
+            -type f \
+            ! -name '*.md' \
+            ! -name '.gitignore' \
+            ! -name '.gitattributes' \
+            ! -name '.editorconfig' \
+            ! -name 'phpunit.xml*' \
+            ! -name 'phpstan.neon*' \
+            ! -name 'psalm.xml*' \
+            ! -name 'phpcs.xml*' \
+            -print | LC_ALL=C sort | zip -X -q "$archive" -@
+          if [[ "$INCLUDE_VENDOR" == 'true' && -d vendor ]]; then
+            find vendor -type f -print | LC_ALL=C sort | zip -X -q "$archive" -@
+          fi
+          echo "artifact-name=$PACKAGE_NAME" >> "$GITHUB_OUTPUT"
+          echo "Package archive: $archive"
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs['artifact-name'] }}
+          path: ${{ runner.temp }}/${{ inputs['package-name'] }}.zip
+          if-no-files-found: error
+          retention-days: ${{ inputs['artifact-retention-days'] }}
